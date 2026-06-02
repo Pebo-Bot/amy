@@ -6,6 +6,7 @@
 #include <mach/mach_time.h>
 #include <pthread.h>
 #undef unichar
+#import "amy.h"
 #import "amy_midi.h"
 
 static CGEventSourceRef eventSource;
@@ -43,6 +44,10 @@ static uint8_t midi_status_len(uint8_t status) {
 
 
 void midi_out(uint8_t * bytes, uint16_t len) {
+    if ((amy_global.config.midi & AMY_MIDI_IS_MACOS) == 0 || out_port == 0) {
+        return;
+    }
+
     if (@available(macOS 11, *))  {
         MIDIPacketList pl;
         MIDIPacket *p;
@@ -132,6 +137,10 @@ void* run_midi_macos(void*argp){
 }
 
 void run_midi() {
+    if ((amy_global.config.midi & AMY_MIDI_IS_MACOS) == 0) {
+        return;
+    }
+
     if (sysex_buffer == NULL) {  // has not been started yet.
         sysex_buffer = malloc(MAX_SYSEX_BYTES);
         pthread_t midi_thread_id;

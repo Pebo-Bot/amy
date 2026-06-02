@@ -321,6 +321,7 @@ int sprint_event(amy_event *e, char *s, size_t len, bool wirecode) {
     _EPRINT_VALS_5(e->echo_level, e->echo_delay_ms, e->echo_max_delay_ms, e->echo_feedback, e->echo_filter_coef, "echo_{level,delay,max,fb,filt}", "M");
     _EPRINT_VALS_5(e->chorus_level, e->chorus_max_delay, e->chorus_lfo_freq, e->chorus_depth, AMY_UNSET_FLOAT, "chorus_{level,delay,lfo,depth}", "k");
     _EPRINT_VALS_5(e->reverb_level, e->reverb_liveness, e->reverb_damping, e->reverb_xover_hz, AMY_UNSET_FLOAT, "reverb_{level,live,damp,xover}", "h");
+    _EPRINT_I(bus_effect_return, "bus_effect_return", "Y");
 
     if (wirecode && (s - s_entry) > 0) { sprintf(s, "Z"); s += strlen(s); }
 
@@ -387,7 +388,10 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _CASE_F(echo_max_delay_ms, ECHO_MAX_DELAY_MS)
       _CASE_F(echo_level, ECHO_LEVEL)
       _CASE_F(echo_delay_ms, ECHO_DELAY_MS)
+      _CASE_F(echo_delay_ms_l, ECHO_DELAY_MS_L)
+      _CASE_F(echo_delay_ms_r, ECHO_DELAY_MS_R)
       _CASE_F(echo_feedback, ECHO_FEEDBACK)
+      _CASE_F(echo_width, ECHO_WIDTH)
       _CASE_F(echo_filter_coef, ECHO_FILTER_COEF)
       _CASE_F(chorus_max_delay, CHORUS_MAX_DELAY)
       _CASE_F(chorus_level, CHORUS_LEVEL)
@@ -397,6 +401,7 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _CASE_F(reverb_liveness, REVERB_LIVENESS)
       _CASE_F(reverb_damping, REVERB_DAMPING)
       _CASE_F(reverb_xover_hz, REVERB_XOVER_HZ)
+      _CASE_I(bus_effect_return, BUS_EFFECT_RETURN)
       _CASE_I(eg_type[0], EG0_TYPE)
       _CASE_I(eg_type[1], EG1_TYPE)
       _CASE_F(velocity, VELOCITY)
@@ -609,10 +614,13 @@ void set_event_for_bus_fx(amy_event *event, uint8_t bus, global_state_t *state) 
     event->chorus_depth = state->bus[bus]->chorus.depth;
     // Echo
     event->echo_level = S2F(state->bus[bus]->echo.level);
-    event->echo_delay_ms = state->bus[bus]->echo.delay_samples * 1000.f / AMY_SAMPLE_RATE;
+    event->echo_delay_ms = state->bus[bus]->echo.delay_samples[0] * 1000.f / AMY_SAMPLE_RATE;
+    event->echo_delay_ms_l = state->bus[bus]->echo.delay_samples[0] * 1000.f / AMY_SAMPLE_RATE;
+    event->echo_delay_ms_r = state->bus[bus]->echo.delay_samples[1] * 1000.f / AMY_SAMPLE_RATE;
     if (state->bus[bus]->echo.max_delay_samples != (uint32_t)(ECHO_DEFAULT_MAX_DELAY_MS / 1000.f * AMY_SAMPLE_RATE))
         event->echo_max_delay_ms = state->bus[bus]->echo.max_delay_samples * 1000.f / AMY_SAMPLE_RATE;
-    event->echo_feedback = S2F(state->bus[bus]->echo.feedback);
+    event->echo_feedback = S2F(state->bus[bus]->echo.feedback) + S2F(state->bus[bus]->echo.cross_feedback);
+    event->echo_width = state->bus[bus]->echo.width;
     event->echo_filter_coef = S2F(state->bus[bus]->echo.filter_coef);
 }
 

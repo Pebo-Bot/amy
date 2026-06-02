@@ -12,6 +12,10 @@ void free_delay_line(delay_line_t *d);
 
 void apply_variable_delay(SAMPLE *block, delay_line_t *delay_line, SAMPLE *delay_samples, SAMPLE mod_scale, SAMPLE mix_level, SAMPLE feedback_level);
 void apply_fixed_delay(SAMPLE *block, delay_line_t *delay_line, uint32_t delay_samples, SAMPLE mix_level, SAMPLE feedback, SAMPLE filter_coef);
+void apply_stereo_fixed_delay(SAMPLE *left, SAMPLE *right,
+                              delay_line_t *left_delay, delay_line_t *right_delay,
+                              SAMPLE mix_level, SAMPLE feedback, SAMPLE cross_feedback,
+                              SAMPLE filter_coef);
 
 reverb_params_t *new_reverb();
 void delete_reverb(reverb_params_t *rev);

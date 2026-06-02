@@ -172,8 +172,11 @@ void amy_clear_event(amy_event *e) {
     AMY_UNSET(e->eq_h);
     AMY_UNSET(e->echo_level);
     AMY_UNSET(e->echo_delay_ms);
+    AMY_UNSET(e->echo_delay_ms_l);
+    AMY_UNSET(e->echo_delay_ms_r);
     AMY_UNSET(e->echo_max_delay_ms);
     AMY_UNSET(e->echo_feedback);
+    AMY_UNSET(e->echo_width);
     AMY_UNSET(e->echo_filter_coef);
     AMY_UNSET(e->chorus_level);
     AMY_UNSET(e->chorus_max_delay);
@@ -183,6 +186,7 @@ void amy_clear_event(amy_event *e) {
     AMY_UNSET(e->reverb_liveness);
     AMY_UNSET(e->reverb_damping);
     AMY_UNSET(e->reverb_xover_hz);
+    AMY_UNSET(e->bus_effect_return);
     AMY_UNSET(e->oscs_per_voice);
 }
 

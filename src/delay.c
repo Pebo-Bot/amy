@@ -193,6 +193,50 @@ void apply_fixed_delay(SAMPLE *block, delay_line_t *delay_line, uint32_t delay_s
     delay_line_in_out_fixed_delay(block, block, AMY_BLOCK_SIZE, delay_samples, delay_line, mix_level, feedback, filter_coef);
 }
 
+void apply_stereo_fixed_delay(SAMPLE *left, SAMPLE *right,
+                              delay_line_t *left_delay, delay_line_t *right_delay,
+                              SAMPLE mix_level, SAMPLE feedback_level,
+                              SAMPLE cross_feedback_level, SAMPLE filter_coef) {
+    if (filter_coef == 0) {
+        for (int i = 0; i < AMY_BLOCK_SIZE; ++i) {
+            SAMPLE delay_l = DEL_OUT(left_delay, 0);
+            SAMPLE delay_r = DEL_OUT(right_delay, 0);
+            SAMPLE next_l = left[i] + SMULR6(feedback_level, delay_l) + SMULR6(cross_feedback_level, delay_r);
+            SAMPLE next_r = right[i] + SMULR6(feedback_level, delay_r) + SMULR6(cross_feedback_level, delay_l);
+            DEL_IN(left_delay, next_l);
+            DEL_IN(right_delay, next_r);
+            left[i] += MUL8_SS(mix_level, delay_l);
+            right[i] += MUL8_SS(mix_level, delay_r);
+        }
+    } else if (filter_coef > 0) {
+        for (int i = 0; i < AMY_BLOCK_SIZE; ++i) {
+            SAMPLE delay_l = DEL_OUT(left_delay, 0);
+            SAMPLE delay_r = DEL_OUT(right_delay, 0);
+            SAMPLE next_l = left[i] + SMULR6(feedback_level, delay_l) + SMULR6(cross_feedback_level, delay_r);
+            SAMPLE next_r = right[i] + SMULR6(feedback_level, delay_r) + SMULR6(cross_feedback_level, delay_l);
+            SAMPLE last_l = left_delay->samples[(left_delay->next_in - 1) & (left_delay->len - 1)];
+            SAMPLE last_r = right_delay->samples[(right_delay->next_in - 1) & (right_delay->len - 1)];
+            DEL_IN(left_delay, next_l + SMULR6(filter_coef, last_l - next_l));
+            DEL_IN(right_delay, next_r + SMULR6(filter_coef, last_r - next_r));
+            left[i] += MUL8_SS(mix_level, delay_l);
+            right[i] += MUL8_SS(mix_level, delay_r);
+        }
+    } else {
+        for (int i = 0; i < AMY_BLOCK_SIZE; ++i) {
+            SAMPLE delay_l = DEL_OUT(left_delay, 0);
+            SAMPLE delay_r = DEL_OUT(right_delay, 0);
+            SAMPLE output_l = delay_l + SMULR6(filter_coef, DEL_OUT(left_delay, 1));
+            SAMPLE output_r = delay_r + SMULR6(filter_coef, DEL_OUT(right_delay, 1));
+            SAMPLE next_l = left[i] + SMULR6(feedback_level, output_l) + SMULR6(cross_feedback_level, output_r);
+            SAMPLE next_r = right[i] + SMULR6(feedback_level, output_r) + SMULR6(cross_feedback_level, output_l);
+            DEL_IN(left_delay, next_l);
+            DEL_IN(right_delay, next_r);
+            left[i] += MUL8_SS(mix_level, output_l);
+            right[i] += MUL8_SS(mix_level, output_r);
+        }
+    }
+}
+
 #define INITIAL_XOVER_HZ 3000.0
 #define INITIAL_LIVENESS 0.85
 #define INITIAL_DAMPING 0.5

@@ -159,6 +159,7 @@ struct mod_synthinfo ** msynth;
 // Two mixing blocks, one per core of rendering
 SAMPLE *fbl[AMY_MAX_CORES][AMY_NUM_BUSES];
 SAMPLE *per_osc_fb[AMY_MAX_CORES][AMY_NUM_BUSES];
+SAMPLE *effect_return_dry_fb;
 SAMPLE core_max[AMY_MAX_CORES];
 
 // Public pointer to recently-emitted waveform block.
@@ -226,40 +227,60 @@ uint32_t enclosing_power_of_2(uint32_t n) {
     return result;
 }
 
-void config_echo(uint8_t bus, float level, float delay_ms, float max_delay_ms, float feedback, float filter_coef) {
+void config_echo_stereo(uint8_t bus, float level, float delay_ms_l, float delay_ms_r,
+                        float max_delay_ms, float feedback, float width, float filter_coef) {
     if (AMY_IS_UNSET(level)) level = S2F(amy_global.bus[bus]->echo.level);
-    if (AMY_IS_UNSET(delay_ms)) delay_ms = (amy_global.bus[bus]->echo.delay_samples + 0.5f) / (AMY_SAMPLE_RATE / 1000.f);
+    if (AMY_IS_UNSET(delay_ms_l)) delay_ms_l = (amy_global.bus[bus]->echo.delay_samples[0] + 0.5f) / (AMY_SAMPLE_RATE / 1000.f);
+    if (AMY_IS_UNSET(delay_ms_r)) delay_ms_r = (amy_global.bus[bus]->echo.delay_samples[1] + 0.5f) / (AMY_SAMPLE_RATE / 1000.f);
     if (AMY_IS_UNSET(max_delay_ms)) max_delay_ms = (amy_global.bus[bus]->echo.max_delay_samples + 0.5f) / (AMY_SAMPLE_RATE / 1000.f);
     if (AMY_IS_UNSET(feedback)) feedback = S2F(amy_global.bus[bus]->echo.feedback);
+    if (AMY_IS_UNSET(width)) width = amy_global.bus[bus]->echo.width;
     if (AMY_IS_UNSET(filter_coef)) filter_coef = S2F(amy_global.bus[bus]->echo.filter_coef);
 
-    uint32_t delay_samples = (uint32_t)(delay_ms / 1000.f * AMY_SAMPLE_RATE);
+    uint32_t delay_samples[AMY_MAX_CHANNELS];
+    delay_samples[0] = (uint32_t)(delay_ms_l / 1000.f * AMY_SAMPLE_RATE);
+    delay_samples[1] = (uint32_t)(delay_ms_r / 1000.f * AMY_SAMPLE_RATE);
     uint32_t max_delay_samples = enclosing_power_of_2((uint32_t)(max_delay_ms / 1000.f * AMY_SAMPLE_RATE));
+    if (max_delay_samples < 2) max_delay_samples = 2;
     // Remember this value for max_delay_samples even if we don't allocate on this call, so a later UNSET call will pick it up.
     amy_global.bus[bus]->echo.max_delay_samples = max_delay_samples;
     //fprintf(stderr, "config_echo: bus %d delay=%.3f ms / %d samps max_delay=%.3f ms / %d samps echo.max_delay_samples=%d\n", bus, delay_ms, delay_samples, max_delay_ms, max_delay_samples, amy_global.bus[bus]->echo.max_delay_samples);
 
     if (level > 0) {
-        if (amy_global.bus[bus]->echo.echo_delay_lines[0] == NULL) {
+        if (amy_global.bus[bus]->echo.echo_delay_lines[0] == NULL ||
+            amy_global.bus[bus]->echo.echo_delay_lines[0]->len != (int)max_delay_samples) {
             // Delay line len must be power of 2.
+            dealloc_echo_delay_lines(bus);
             if (!alloc_echo_delay_lines(bus, max_delay_samples)) return;
             //fprintf(stderr, "config_echo: max_delay_samples=%d\n", max_delay_samples);
         }
         // Apply delay.  We have to stay 1 sample less than delay line length for FIR EQ delay.
-        if (delay_samples > amy_global.bus[bus]->echo.max_delay_samples - 1) delay_samples = amy_global.bus[bus]->echo.max_delay_samples - 1;
         for (int c = 0; c < AMY_NCHANS; ++c) {
-            amy_global.bus[bus]->echo.echo_delay_lines[c]->fixed_delay = delay_samples;
+            if (delay_samples[c] > amy_global.bus[bus]->echo.max_delay_samples - 1)
+                delay_samples[c] = amy_global.bus[bus]->echo.max_delay_samples - 1;
+            amy_global.bus[bus]->echo.echo_delay_lines[c]->fixed_delay = delay_samples[c];
         }
     }
     amy_global.bus[bus]->echo.level = F2S(level);
-    amy_global.bus[bus]->echo.delay_samples = delay_samples;
+    for (int c = 0; c < AMY_NCHANS; ++c) {
+        amy_global.bus[bus]->echo.delay_samples[c] = delay_samples[c];
+    }
     // Filter is IIR [1, filter_coef] normalized for filter_coef > 0 (LPF), or FIR [1, filter_coef] normalized for filter_coef < 0 (HPF).
     if (filter_coef > 0.99)  filter_coef = 0.99;  // Avoid unstable filters.
     amy_global.bus[bus]->echo.filter_coef = F2S(filter_coef);
     // FIR filter potentially has gain > 1 for high frequencies, so discount the loop feedback to stop things exploding.
     if (filter_coef < 0)  feedback /= 1.f - filter_coef;
-    amy_global.bus[bus]->echo.feedback = F2S(feedback);
+    if (width < 0) width = 0;
+    if (width > 1) width = 1;
+    amy_global.bus[bus]->echo.feedback = F2S(feedback * (1.0f - width));
+    amy_global.bus[bus]->echo.cross_feedback = F2S(feedback * width);
+    amy_global.bus[bus]->echo.width = width;
     //fprintf(stderr, "config_echo: delay_samples=%d level=%.3f feedback=%.3f filter_coef=%.3f fc0=%.3f\n", delay_samples, level, feedback, filter_coef, S2F(echo.filter_coef));
+}
+
+void config_echo(uint8_t bus, float level, float delay_ms, float max_delay_ms, float feedback, float filter_coef) {
+    config_echo_stereo(bus, level, delay_ms, delay_ms, max_delay_ms, feedback,
+                       AMY_UNSET_FLOAT, filter_coef);
 }
 
 void dealloc_chorus_delay_lines(uint8_t bus) {
@@ -408,6 +429,7 @@ void config_eq(uint8_t bus, SAMPLE eq_l, SAMPLE eq_m, SAMPLE eq_h) {
 
 
 void bus_reset(uint8_t bus) {
+    amy_global.bus[bus]->effect_return = false;
     config_eq(bus, F2S(1.0f), F2S(1.0f), F2S(1.0f));
     filters_init(bus);
     reset_parametric(bus);
@@ -570,9 +592,13 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
     // If this is a bus-directed event, use d->osc to store the bus number instead.
     bool bus_directed_command = false;
     if (AMY_IS_SET(e->eq_l) || AMY_IS_SET(e->eq_m) || AMY_IS_SET(e->eq_h)
-        || AMY_IS_SET(e->echo_level) || AMY_IS_SET(e->echo_delay_ms) || AMY_IS_SET(e->echo_max_delay_ms) || AMY_IS_SET(e->echo_feedback) || AMY_IS_SET(e->echo_filter_coef)
+        || AMY_IS_SET(e->echo_level) || AMY_IS_SET(e->echo_delay_ms)
+        || AMY_IS_SET(e->echo_delay_ms_l) || AMY_IS_SET(e->echo_delay_ms_r)
+        || AMY_IS_SET(e->echo_max_delay_ms) || AMY_IS_SET(e->echo_feedback)
+        || AMY_IS_SET(e->echo_width) || AMY_IS_SET(e->echo_filter_coef)
         || AMY_IS_SET(e->chorus_level) || AMY_IS_SET(e->chorus_max_delay) || AMY_IS_SET(e->chorus_lfo_freq) || AMY_IS_SET(e->chorus_depth) 
-        || AMY_IS_SET(e->reverb_level) || AMY_IS_SET(e->reverb_liveness) || AMY_IS_SET(e->reverb_damping) || AMY_IS_SET(e->reverb_xover_hz)) {
+        || AMY_IS_SET(e->reverb_level) || AMY_IS_SET(e->reverb_liveness) || AMY_IS_SET(e->reverb_damping) || AMY_IS_SET(e->reverb_xover_hz)
+        || AMY_IS_SET(e->bus_effect_return)) {
         if (AMY_IS_SET(e->osc))  fprintf(stderr, "** osc %d specific for bus-directed command, ignoring\n", e->osc);  // Can't at this moment be more specific about which command.
         // Store the target bus in d.osc.
         d.osc = AMY_IS_SET(e->bus) ? e->bus : AMY_DEFAULT_BUS;
@@ -649,7 +675,10 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
     EVENT_TO_DELTA_F(echo_max_delay_ms, ECHO_MAX_DELAY_MS)  // set MAX_DELAY first
     EVENT_TO_DELTA_F(echo_level, ECHO_LEVEL)
     EVENT_TO_DELTA_F(echo_delay_ms, ECHO_DELAY_MS)
+    EVENT_TO_DELTA_F(echo_delay_ms_l, ECHO_DELAY_MS_L)
+    EVENT_TO_DELTA_F(echo_delay_ms_r, ECHO_DELAY_MS_R)
     EVENT_TO_DELTA_F(echo_feedback, ECHO_FEEDBACK)
+    EVENT_TO_DELTA_F(echo_width, ECHO_WIDTH)
     EVENT_TO_DELTA_F(echo_filter_coef, ECHO_FILTER_COEF)
     EVENT_TO_DELTA_F(chorus_max_delay, CHORUS_MAX_DELAY)   // set MAX_DELAY first
     EVENT_TO_DELTA_F(chorus_level, CHORUS_LEVEL)
@@ -659,6 +688,7 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
     EVENT_TO_DELTA_F(reverb_liveness, REVERB_LIVENESS)
     EVENT_TO_DELTA_F(reverb_damping, REVERB_DAMPING)
     EVENT_TO_DELTA_F(reverb_xover_hz, REVERB_XOVER_HZ)
+    EVENT_TO_DELTA_I(bus_effect_return, BUS_EFFECT_RETURN)
     EVENT_TO_DELTA_I(eg_type[0], EG0_TYPE)
     EVENT_TO_DELTA_I(eg_type[1], EG1_TYPE)
 
@@ -992,6 +1022,7 @@ int8_t oscs_init() {
     output_block = output_block_0;
     amy_in_block = (output_sample_type*)malloc_caps(sizeof(output_sample_type)*AMY_BLOCK_SIZE*AMY_NCHANS, amy_global.config.ram_caps_block);
     amy_external_in_block = (output_sample_type*)malloc_caps(sizeof(output_sample_type)*AMY_BLOCK_SIZE*AMY_NCHANS, amy_global.config.ram_caps_block);
+    effect_return_dry_fb = (SAMPLE*)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS, amy_global.config.ram_caps_fbl);
     // set all oscillators to their default values
     amy_reset_oscs();
     // reset the deltas queue
@@ -1117,6 +1148,7 @@ void oscs_deinit() {
     for (int i = 0; i < AMY_OSCS + AMY_NUM_BUSES; ++i) free_osc(i);
     free(amy_external_in_block);
     free(amy_in_block);
+    free(effect_return_dry_fb);
     free(output_block_1);
     free(output_block_0);
     free(msynth);
@@ -1352,11 +1384,14 @@ void play_delta(struct delta *d) {
     if(d->param == EQ_L) amy_global.bus[bus]->eq.eq[0] = F2S(powf(10, d->data.f / 20.0));
     if(d->param == EQ_M) amy_global.bus[bus]->eq.eq[1] = F2S(powf(10, d->data.f / 20.0));
     if(d->param == EQ_H) amy_global.bus[bus]->eq.eq[2] = F2S(powf(10, d->data.f / 20.0));
-    if(d->param == ECHO_LEVEL) config_echo(bus, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
-    if(d->param == ECHO_DELAY_MS) config_echo(bus, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
-    if(d->param == ECHO_MAX_DELAY_MS) config_echo(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
-    if(d->param == ECHO_FEEDBACK) config_echo(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT);
-    if(d->param == ECHO_FILTER_COEF) config_echo(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f);
+    if(d->param == ECHO_LEVEL) config_echo_stereo(bus, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
+    if(d->param == ECHO_DELAY_MS) config_echo_stereo(bus, AMY_UNSET_FLOAT, d->data.f, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
+    if(d->param == ECHO_DELAY_MS_L) config_echo_stereo(bus, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
+    if(d->param == ECHO_DELAY_MS_R) config_echo_stereo(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
+    if(d->param == ECHO_MAX_DELAY_MS) config_echo_stereo(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
+    if(d->param == ECHO_FEEDBACK) config_echo_stereo(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
+    if(d->param == ECHO_WIDTH) config_echo_stereo(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT);
+    if(d->param == ECHO_FILTER_COEF) config_echo_stereo(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f);
     if(d->param == CHORUS_LEVEL) config_chorus(bus, d->data.f, UINT16_MAX, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
     if(d->param == CHORUS_MAX_DELAY) config_chorus(bus, AMY_UNSET_FLOAT, AMY_IS_UNSET(d->data.f)?UINT16_MAX : (uint16_t)roundf(d->data.f), AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
     if(d->param == CHORUS_LFO_FREQ) config_chorus(bus, AMY_UNSET_FLOAT, UINT16_MAX, d->data.f, AMY_UNSET_FLOAT);
@@ -1365,6 +1400,7 @@ void play_delta(struct delta *d) {
     if(d->param == REVERB_LIVENESS) config_reverb(bus, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT);
     if(d->param == REVERB_DAMPING) config_reverb(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f, AMY_UNSET_FLOAT);
     if(d->param == REVERB_XOVER_HZ) config_reverb(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f);
+    if(d->param == BUS_EFFECT_RETURN) amy_global.bus[bus]->effect_return = d->data.i ? true : false;
 
     // triggers / envelopes
     // the only way a sound is made is if velocity (note on) is >0.
@@ -1956,6 +1992,11 @@ int16_t * amy_fill_buffer() {
         if (amy_global.bus[bus]->eq.eq[0] != F2S(1.0f) || amy_global.bus[bus]->eq.eq[1] != F2S(1.0f) || amy_global.bus[bus]->eq.eq[2] != F2S(1.0f)) {
             parametric_eq_process(bus, fbl[0][bus]);
         }
+        bool effect_return = amy_global.bus[bus]->effect_return;
+        if (effect_return && effect_return_dry_fb != NULL) {
+            memcpy(effect_return_dry_fb, fbl[0][bus],
+                   sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS);
+        }
         if(AMY_HAS_CHORUS) {
             // apply per-bus chorus.
             if(amy_global.bus[bus]->chorus.level > 0 && amy_global.bus[bus]->chorus.chorus_delay_lines[0] != NULL) {
@@ -1974,8 +2015,23 @@ int16_t * amy_fill_buffer() {
         if (AMY_HAS_ECHO) {
             // Apply per-bus echo.
             if (amy_global.bus[bus]->echo.level > 0 && amy_global.bus[bus]->echo.echo_delay_lines[0] != NULL ) {
-                for (int16_t c=0; c < AMY_NCHANS; ++c) {
-                    apply_fixed_delay(fbl[0][bus] + c * AMY_BLOCK_SIZE, amy_global.bus[bus]->echo.echo_delay_lines[c], amy_global.bus[bus]->echo.delay_samples, amy_global.bus[bus]->echo.level, amy_global.bus[bus]->echo.feedback, amy_global.bus[bus]->echo.filter_coef);
+                if (AMY_NCHANS == 2 && amy_global.bus[bus]->echo.echo_delay_lines[1] != NULL) {
+                    apply_stereo_fixed_delay(fbl[0][bus], fbl[0][bus] + AMY_BLOCK_SIZE,
+                                             amy_global.bus[bus]->echo.echo_delay_lines[0],
+                                             amy_global.bus[bus]->echo.echo_delay_lines[1],
+                                             amy_global.bus[bus]->echo.level,
+                                             amy_global.bus[bus]->echo.feedback,
+                                             amy_global.bus[bus]->echo.cross_feedback,
+                                             amy_global.bus[bus]->echo.filter_coef);
+                } else {
+                    for (int16_t c=0; c < AMY_NCHANS; ++c) {
+                        apply_fixed_delay(fbl[0][bus] + c * AMY_BLOCK_SIZE,
+                                          amy_global.bus[bus]->echo.echo_delay_lines[c],
+                                          amy_global.bus[bus]->echo.delay_samples[c],
+                                          amy_global.bus[bus]->echo.level,
+                                          amy_global.bus[bus]->echo.feedback,
+                                          amy_global.bus[bus]->echo.filter_coef);
+                    }
                 }
             }
         }
@@ -1988,6 +2044,10 @@ int16_t * amy_fill_buffer() {
                     stereo_reverb(amy_global.bus[bus]->reverb.rev, fbl[0][bus], fbl[0][bus] + AMY_BLOCK_SIZE, fbl[0][bus], fbl[0][bus] + AMY_BLOCK_SIZE, AMY_BLOCK_SIZE, amy_global.bus[bus]->reverb.level);
                 }
             }
+        }
+        if (effect_return && effect_return_dry_fb != NULL) {
+            for (int16_t i=0; i < AMY_BLOCK_SIZE * AMY_NCHANS; ++i)
+                fbl[0][bus][i] -= effect_return_dry_fb[i];
         }
     }  // end of per-bus FX
     // global volume is supposed to max out at 10, so scale by 0.1.

@@ -350,8 +350,11 @@ enum params{
     NOTE_SOURCE,                         // 208
     ECHO_LEVEL,
     ECHO_DELAY_MS,
+    ECHO_DELAY_MS_L,
+    ECHO_DELAY_MS_R,
     ECHO_MAX_DELAY_MS,
     ECHO_FEEDBACK,
+    ECHO_WIDTH,
     ECHO_FILTER_COEF,
     CHORUS_LEVEL,
     CHORUS_MAX_DELAY,
@@ -361,6 +364,7 @@ enum params{
     REVERB_LIVENESS,
     REVERB_DAMPING,
     REVERB_XOVER_HZ,
+    BUS_EFFECT_RETURN,
     BUS,
     BUS_SEND_BASE,
     BUS_SEND_END=BUS_SEND_BASE + AMY_NUM_BUSES,
@@ -533,10 +537,14 @@ typedef struct amy_event {
     uint32_t reset_osc;
     // Global effects
     uint8_t bus;  // Which bus this osc ends up on / Prefix for global FX params
+    uint8_t bus_effect_return;  // If set, bus FX output is wet-only.
     float echo_level;
     float echo_delay_ms;
+    float echo_delay_ms_l;
+    float echo_delay_ms_r;
     float echo_max_delay_ms;
     float echo_feedback;
+    float echo_width;
     float echo_filter_coef;
     float chorus_level;
     float chorus_max_delay;
@@ -771,9 +779,11 @@ typedef struct chorus_config {
 
 typedef struct echo_config {
     SAMPLE level;  // Mix of echo into output.  0 = Echo off.
-    uint32_t delay_samples;  // Current delay, quantized to samples.
+    uint32_t delay_samples[AMY_MAX_CHANNELS];  // Current per-channel delays.
     uint32_t max_delay_samples;  // Maximum delay, i.e. size of allocated delay line.
-    SAMPLE feedback;  // Gain applied when feeding back output to input.
+    SAMPLE feedback;  // Same-channel feedback gain.
+    SAMPLE cross_feedback;  // Cross-channel feedback gain for ping-pong echo.
+    float width;
     SAMPLE filter_coef;  // Echo is filtered by a two-point normalize IIR.  This is the real pole location.
     delay_line_t *echo_delay_lines[AMY_MAX_CHANNELS];
 } echo_config_t;
@@ -786,6 +796,7 @@ typedef struct bus_state {
     reverb_state_t reverb;
     chorus_config_t chorus;
     echo_config_t echo;
+    uint8_t effect_return;
 } bus_state_t;
 
 // global synth state
@@ -874,6 +885,7 @@ void * malloc_caps(uint32_t size, uint32_t flags);
 void config_reverb(uint8_t bus, float level, float liveness, float damping, float xover_hz);
 void config_chorus(uint8_t bus, float level, uint16_t max_delay, float lfo_freq, float depth);
 void config_echo(uint8_t bus, float level, float delay_ms, float max_delay_ms, float feedback, float filter_coef);
+void config_echo_stereo(uint8_t bus, float level, float delay_ms_l, float delay_ms_r, float max_delay_ms, float feedback, float width, float filter_coef);
 void osc_note_on(uint16_t osc, float initial_freq);
 void chorus_note_on(float initial_freq);
 

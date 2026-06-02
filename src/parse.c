@@ -697,7 +697,7 @@ int amy_parse_message(char * message, int length, amy_event *e) {
                 }
                 break;
             case 'y': e->bus = atoi(arg); break;
-            /* Y still available */
+            case 'Y': e->bus_effect_return = atoi(arg) ? 1 : 0; break;
             case 'z': {
                 pos += amy_parse_transfer_layer_message(arg);
                 break;
@@ -719,4 +719,3 @@ int amy_parse_message(char * message, int length, amy_event *e) {
     // Return exactly how many characters we used.
     return pos;
 }
-
