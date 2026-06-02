@@ -362,6 +362,8 @@ enum params{
     REVERB_DAMPING,
     REVERB_XOVER_HZ,
     BUS,
+    BUS_SEND_BASE,
+    BUS_SEND_END=BUS_SEND_BASE + AMY_NUM_BUSES,
     NO_PARAM                    // 210
 };
 
@@ -491,6 +493,7 @@ typedef struct amy_event {
     float velocity;
     float trigger_phase;
     float volume[AMY_NUM_BUSES];  // event_only
+    float bus_send[AMY_NUM_BUSES];  // per-osc send gains, 0..1
     float pitch_bend;  // event_only
     float tempo;  // event_only
     uint16_t latency_ms;  // event_only
@@ -550,6 +553,8 @@ struct synthinfo {
     uint16_t osc; // self-reference
     // Configuration (can be fixed during oscillation)
     uint8_t bus;  // Which bus this osc ends up on
+    uint8_t bus_send_enabled;  // If set, route through bus_send[] instead of bus.
+    float bus_send[AMY_NUM_BUSES];
     uint16_t wave;
     int16_t preset;  // Negative preset is voice count for build-your-own PARTIALS
     uint8_t note_source;  // Was the most recent note on/off received e.g. from MIDI?

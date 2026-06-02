@@ -616,6 +616,11 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
         if (AMY_IS_SET(e->bus) && e->bus > amy_global.highest_bus)
             amy_global.highest_bus = e->bus;
     }
+    for (int bus = 0; bus < AMY_NUM_BUSES; ++bus) {
+        if (AMY_IS_SET(e->bus_send[bus]) && bus > amy_global.highest_bus)
+            amy_global.highest_bus = bus;
+        EVENT_TO_DELTA_F(bus_send[bus], BUS_SEND_BASE + bus)
+    }
     EVENT_TO_DELTA_I(wave, WAVE)
     EVENT_TO_DELTA_I(preset, PRESET)
     EVENT_TO_DELTA_F(midi_note, MIDI_NOTE)
@@ -756,6 +761,9 @@ void reset_osc_params(struct synthinfo *psynth) {
     // osc params are the things set through the amy_event API
     // Event-derived config
     psynth->bus = AMY_DEFAULT_BUS;
+    psynth->bus_send_enabled = false;
+    for (int bus = 0; bus < AMY_NUM_BUSES; ++bus)
+        psynth->bus_send[bus] = 0.0f;
     psynth->wave = SINE;
     AMY_UNSET(psynth->preset);
     AMY_UNSET(psynth->note_source);
@@ -1215,6 +1223,12 @@ void play_delta(struct delta *d) {
         }
     }
     DELTA_TO_SYNTH_I(BUS, bus)
+    if(d->param >= BUS_SEND_BASE && d->param < BUS_SEND_END) {
+        uint8_t bus = (uint8_t)(d->param - BUS_SEND_BASE);
+        synth[d->osc]->bus_send_enabled = true;
+        synth[d->osc]->bus_send[bus] = d->data.f;
+        if (bus > amy_global.highest_bus) amy_global.highest_bus = bus;
+    }
     DELTA_TO_SYNTH_F(FEEDBACK, feedback)
     DELTA_TO_SYNTH_F(RATIO, logratio)
     DELTA_TO_SYNTH_F(RESONANCE, resonance)
@@ -1596,18 +1610,20 @@ static inline float rgain_of_pan(float pan) {
 }
 
 
-void mix_with_pan(SAMPLE *stereo_dest, SAMPLE *mono_src, float pan_start, float pan_end) {
+static void mix_with_pan_gain(SAMPLE *stereo_dest, SAMPLE *mono_src,
+                              float pan_start, float pan_end, float gain) {
     AMY_PROFILE_START(MIX_WITH_PAN)
     /* copy a block_size of mono samples into an interleaved stereo buffer, applying pan */
+    SAMPLE send_gain = F2S(gain);
     if(AMY_NCHANS==1) {
         // actually dest is mono, pan is ignored.
-        for(uint16_t i=0;i<AMY_BLOCK_SIZE;i++) { stereo_dest[i] += mono_src[i]; }
+        for(uint16_t i=0;i<AMY_BLOCK_SIZE;i++) { stereo_dest[i] += MUL8_SS(send_gain, mono_src[i]); }
     } else { 
         // stereo
-        SAMPLE gain_l = F2S(lgain_of_pan(pan_start));
-        SAMPLE gain_r = F2S(rgain_of_pan(pan_start));
-        SAMPLE d_gain_l = F2S((lgain_of_pan(pan_end) - lgain_of_pan(pan_start)) / AMY_BLOCK_SIZE);
-        SAMPLE d_gain_r = F2S((rgain_of_pan(pan_end) - rgain_of_pan(pan_start)) / AMY_BLOCK_SIZE);
+        SAMPLE gain_l = MUL8_SS(send_gain, F2S(lgain_of_pan(pan_start)));
+        SAMPLE gain_r = MUL8_SS(send_gain, F2S(rgain_of_pan(pan_start)));
+        SAMPLE d_gain_l = MUL8_SS(send_gain, F2S((lgain_of_pan(pan_end) - lgain_of_pan(pan_start)) / AMY_BLOCK_SIZE));
+        SAMPLE d_gain_r = MUL8_SS(send_gain, F2S((rgain_of_pan(pan_end) - rgain_of_pan(pan_start)) / AMY_BLOCK_SIZE));
         for(uint16_t i=0;i<AMY_BLOCK_SIZE;i++) {
             stereo_dest[i] += MUL8_SS(gain_l, mono_src[i]);
             stereo_dest[AMY_BLOCK_SIZE + i] += MUL8_SS(gain_r, mono_src[i]);
@@ -1616,6 +1632,10 @@ void mix_with_pan(SAMPLE *stereo_dest, SAMPLE *mono_src, float pan_start, float 
         }
     }
     AMY_PROFILE_STOP(MIX_WITH_PAN)
+}
+
+void mix_with_pan(SAMPLE *stereo_dest, SAMPLE *mono_src, float pan_start, float pan_end) {
+    mix_with_pan_gain(stereo_dest, mono_src, pan_start, pan_end, 1.0f);
 }
 
 
@@ -1765,23 +1785,37 @@ void amy_render(uint16_t start, uint16_t end, uint8_t core) {
     SAMPLE max_max = 0;
     for(uint16_t osc=start; osc<end; osc++) {
         if(synth[osc] != NULL && synth[osc]->status == SYNTH_AUDIBLE) { // skip oscs that are silent or mod sources from playback
-            uint8_t bus = synth[osc]->bus;
-            bzero(per_osc_fb[core][bus], AMY_BLOCK_SIZE * sizeof(SAMPLE));
-            SAMPLE max_val = render_osc_wave(osc, core, per_osc_fb[core][bus]);
+            uint8_t bus = synth[osc]->bus < AMY_NUM_BUSES ? synth[osc]->bus : AMY_DEFAULT_BUS;
+            SAMPLE *osc_buf = per_osc_fb[core][bus];
+            bzero(osc_buf, AMY_BLOCK_SIZE * sizeof(SAMPLE));
+            SAMPLE max_val = render_osc_wave(osc, core, osc_buf);
             if (synth[osc]->status != SYNTH_AUDIBLE) {
                 reset_modosc(msynth[osc]);  // (g)  This makes a difference, but not clicks
                 reset_osc_state(synth[osc]);
             }
             uint8_t handled = 0;
             if(amy_global.config.amy_external_render_hook != NULL) {
-                handled = amy_global.config.amy_external_render_hook(osc, per_osc_fb[core][bus], AMY_BLOCK_SIZE);
+                handled = amy_global.config.amy_external_render_hook(osc, osc_buf, AMY_BLOCK_SIZE);
             } else {
                 #ifdef __EMSCRIPTEN__
                 // TODO -- pass the buffer to a JS shim using the new bytes support, we could use this to visualize CV output
                 #endif
             }
             // only mix the audio in if the external hook did not handle it
-            if(!handled) mix_with_pan(fbl[core][bus], per_osc_fb[core][bus], msynth[osc]->last_pan, msynth[osc]->pan);
+            if(!handled) {
+                if (synth[osc]->bus_send_enabled) {
+                    for (uint8_t send_bus = 0; send_bus < AMY_NUM_BUSES; ++send_bus) {
+                        float send_gain = synth[osc]->bus_send[send_bus];
+                        if (send_gain != 0.0f) {
+                            mix_with_pan_gain(fbl[core][send_bus], osc_buf,
+                                              msynth[osc]->last_pan, msynth[osc]->pan,
+                                              send_gain);
+                        }
+                    }
+                } else {
+                    mix_with_pan(fbl[core][bus], osc_buf, msynth[osc]->last_pan, msynth[osc]->pan);
+                }
+            }
             if (max_val > max_max) max_max = max_val;
         } // end if audible
     }
